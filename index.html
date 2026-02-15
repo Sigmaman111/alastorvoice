@@ -113,7 +113,7 @@ playBtn.onclick = () => {
 
     sourceNode = audioContext.createBufferSource();
     sourceNode.buffer = audioBuffer;
-    sourceNode.playbackRate.value = 1.15; // pitch up slightly
+    sourceNode.playbackRate.value = 1.15; // slight pitch up
 
     const chain = createEffectChain(audioContext);
     sourceNode.connect(chain.input);
@@ -135,6 +135,7 @@ playBtn.onclick = () => {
     }
     requestAnimationFrame(updateProgress);
 
+    // prepare download (raw audio)
     downloadLink.href = bufferToWavBlob(audioBuffer);
     downloadLink.download = "processed_voice.wav";
     downloadLink.style.display = "inline";
@@ -157,17 +158,20 @@ function stopPlayback() {
 
 // --- Effect chain ---
 function createEffectChain(context) {
+    // 1. Band-pass filter
     const bandpass = context.createBiquadFilter();
     bandpass.type = "bandpass";
     bandpass.frequency.value = 1600;
-    bandpass.Q.value = 1.2;
+    bandpass.Q.value = 1.5;
 
+    // 2. Distortion
     const distortion = context.createWaveShaper();
-    distortion.curve = makeDistortionCurve(400);
+    distortion.curve = makeDistortionCurve(350);
     distortion.oversample = '4x';
 
+    // 3. Subtle rhythmic reverb
     const convolver = context.createConvolver();
-    convolver.buffer = createImpulse(context, 0.3, 2);
+    convolver.buffer = createRhythmicReverb(context, 0.3, 2, 0.5);
 
     const gain = context.createGain();
     gain.gain.value = 0.8;
@@ -192,18 +196,23 @@ function makeDistortionCurve(amount) {
     return curve;
 }
 
-function createImpulse(ctx, duration, decay) {
+// Subtle rhythmic reverb using short impulse with rhythmic decay
+function createRhythmicReverb(ctx, duration, decay, pulseInterval) {
     const length = ctx.sampleRate * duration;
     const impulse = ctx.createBuffer(2, length, ctx.sampleRate);
+
     for (let ch = 0; ch < 2; ch++) {
         const data = impulse.getChannelData(ch);
         for (let i = 0; i < length; i++) {
-            data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, decay);
+            // Apply decay and rhythmic pulses
+            const pulse = Math.sin((i / ctx.sampleRate) * (2 * Math.PI / pulseInterval)) * 0.1;
+            data[i] = ((Math.random() * 2 - 1) * Math.pow(1 - i / length, decay)) * (0.5 + pulse);
         }
     }
     return impulse;
 }
 
+// Convert AudioBuffer to WAV Blob
 function bufferToWavBlob(buffer) {
     const numOfChan = buffer.numberOfChannels;
     const length = buffer.length * numOfChan * 2 + 44;
