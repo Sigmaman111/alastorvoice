@@ -16,10 +16,6 @@ button, input {
     padding: 10px 15px;
     font-size: 16px;
 }
-audio {
-    margin-top: 20px;
-    width: 80%;
-}
 #progressContainer {
     width: 80%;
     height: 20px;
@@ -40,28 +36,39 @@ audio {
 
 <h1>Alastor Voice Effect</h1>
 
-<input type="file" id="fileInput" accept=".mp3, .wav, audio/*">
+<input type="file" id="fileInput" accept=".mp3,.wav,audio/*">
+<br>
+<button id="recordBtn">Record Audio</button>
+<button id="stopRecordBtn" disabled>Stop Recording</button>
 <br>
 <button id="playBtn" disabled>Play with Effect</button>
-<button id="stopBtn" disabled>Stop</button>
-
+<button id="stopBtn" disabled>Stop Playback</button>
+<br>
 <div id="progressContainer">
     <div id="progressBar"></div>
 </div>
-
+<br>
 <a id="downloadLink" style="display:none">Download processed audio</a>
 
 <script>
 let audioContext = new (window.AudioContext || window.webkitAudioContext)();
-let sourceNode, isPlaying = false;
 let audioBuffer = null;
+let sourceNode = null;
+let isPlaying = false;
+
+// Recording variables
+let mediaRecorder = null;
+let recordedChunks = [];
 
 const fileInput = document.getElementById('fileInput');
+const recordBtn = document.getElementById('recordBtn');
+const stopRecordBtn = document.getElementById('stopRecordBtn');
 const playBtn = document.getElementById('playBtn');
 const stopBtn = document.getElementById('stopBtn');
 const progressBar = document.getElementById('progressBar');
 const downloadLink = document.getElementById('downloadLink');
 
+// --- Upload MP3/WAV ---
 fileInput.onchange = async e => {
     const file = e.target.files[0];
     if (!file) return;
@@ -74,7 +81,81 @@ fileInput.onchange = async e => {
     playBtn.disabled = false;
 };
 
-// Create the Alastor-style effect chain
+// --- Record Audio ---
+recordBtn.onclick = async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    mediaRecorder = new MediaRecorder(stream);
+    recordedChunks = [];
+
+    mediaRecorder.ondataavailable = e => recordedChunks.push(e.data);
+
+    mediaRecorder.onstop = async () => {
+        const blob = new Blob(recordedChunks, { type: 'audio/wav' });
+        const arrayBuffer = await blob.arrayBuffer();
+        audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+        playBtn.disabled = false;
+        stopRecordBtn.disabled = true;
+    };
+
+    mediaRecorder.start();
+    recordBtn.disabled = true;
+    stopRecordBtn.disabled = false;
+};
+
+stopRecordBtn.onclick = () => {
+    if (mediaRecorder) mediaRecorder.stop();
+    recordBtn.disabled = false;
+};
+
+// --- Play with effect ---
+playBtn.onclick = () => {
+    if (!audioBuffer || isPlaying) return;
+
+    sourceNode = audioContext.createBufferSource();
+    sourceNode.buffer = audioBuffer;
+    sourceNode.playbackRate.value = 1.15; // pitch up slightly
+
+    const chain = createEffectChain(audioContext);
+    sourceNode.connect(chain.input);
+
+    sourceNode.start();
+    isPlaying = true;
+    playBtn.disabled = true;
+    stopBtn.disabled = false;
+
+    const startTime = audioContext.currentTime;
+    const duration = audioBuffer.duration;
+
+    function updateProgress() {
+        if (!isPlaying) return;
+        const elapsed = audioContext.currentTime - startTime;
+        progressBar.style.width = Math.min(100, (elapsed / duration) * 100) + '%';
+        if (elapsed < duration) requestAnimationFrame(updateProgress);
+        else stopPlayback();
+    }
+    requestAnimationFrame(updateProgress);
+
+    downloadLink.href = bufferToWavBlob(audioBuffer);
+    downloadLink.download = "processed_voice.wav";
+    downloadLink.style.display = "inline";
+    downloadLink.textContent = "Download processed audio";
+};
+
+// --- Stop playback ---
+stopBtn.onclick = stopPlayback;
+
+function stopPlayback() {
+    if (sourceNode) {
+        sourceNode.stop();
+        sourceNode.disconnect();
+    }
+    isPlaying = false;
+    playBtn.disabled = false;
+    stopBtn.disabled = true;
+    progressBar.style.width = '0%';
+}
+
+// --- Effect chain ---
 function createEffectChain(context) {
     const bandpass = context.createBiquadFilter();
     bandpass.type = "bandpass";
@@ -97,54 +178,6 @@ function createEffectChain(context) {
     gain.connect(context.destination);
 
     return { input: bandpass, output: gain };
-}
-
-playBtn.onclick = () => {
-    if (!audioBuffer || isPlaying) return;
-
-    sourceNode = audioContext.createBufferSource();
-    sourceNode.buffer = audioBuffer;
-    sourceNode.playbackRate.value = 1.15; // pitch up slightly
-
-    const chain = createEffectChain(audioContext);
-    sourceNode.connect(chain.input);
-
-    sourceNode.start();
-    isPlaying = true;
-    playBtn.disabled = true;
-    stopBtn.disabled = false;
-
-    const startTime = audioContext.currentTime;
-    const duration = audioBuffer.duration;
-
-    // Update progress bar during playback
-    function updateProgress() {
-        if (!isPlaying) return;
-        const elapsed = audioContext.currentTime - startTime;
-        progressBar.style.width = Math.min(100, (elapsed / duration) * 100) + '%';
-        if (elapsed < duration) requestAnimationFrame(updateProgress);
-        else stopPlayback();
-    }
-    requestAnimationFrame(updateProgress);
-
-    // Enable download (raw audio, original MP3/WAV)
-    downloadLink.href = bufferToWavBlob(audioBuffer);
-    downloadLink.download = "processed_voice.wav";
-    downloadLink.style.display = "inline";
-    downloadLink.textContent = "Download processed audio";
-};
-
-stopBtn.onclick = stopPlayback;
-
-function stopPlayback() {
-    if (sourceNode) {
-        sourceNode.stop();
-        sourceNode.disconnect();
-    }
-    isPlaying = false;
-    playBtn.disabled = false;
-    stopBtn.disabled = true;
-    progressBar.style.width = '0%';
 }
 
 // --- Helpers ---
@@ -171,7 +204,6 @@ function createImpulse(ctx, duration, decay) {
     return impulse;
 }
 
-// Convert AudioBuffer to WAV Blob for download
 function bufferToWavBlob(buffer) {
     const numOfChan = buffer.numberOfChannels;
     const length = buffer.length * numOfChan * 2 + 44;
