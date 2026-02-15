@@ -32,7 +32,7 @@ audio {
     width: 0%;
     height: 100%;
     background: #e33;
-    transition: width 0.2s;
+    transition: width 0.1s linear;
 }
 </style>
 </head>
@@ -42,85 +42,102 @@ audio {
 
 <input type="file" id="fileInput" accept="audio/*">
 <br>
-<button id="processBtn" disabled>Apply Voice Effect</button>
+<button id="playBtn" disabled>Play with Effect</button>
+<button id="stopBtn" disabled>Stop</button>
 
 <div id="progressContainer">
     <div id="progressBar"></div>
 </div>
 
-<audio id="outputAudio" controls></audio>
-<br>
 <a id="downloadLink" style="display:none">Download processed audio</a>
 
 <script>
 let audioContext = new (window.AudioContext || window.webkitAudioContext)();
-let rawArrayBuffer = null;
+let sourceNode, gainNode;
+let audioBuffer = null;
+let isPlaying = false;
 
 const fileInput = document.getElementById('fileInput');
-const processBtn = document.getElementById('processBtn');
+const playBtn = document.getElementById('playBtn');
+const stopBtn = document.getElementById('stopBtn');
 const progressBar = document.getElementById('progressBar');
+const downloadLink = document.getElementById('downloadLink');
 
 fileInput.onchange = async e => {
-    rawArrayBuffer = await e.target.files[0].arrayBuffer();
-    processBtn.disabled = false;
+    const arrayBuffer = await e.target.files[0].arrayBuffer();
+    audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+    playBtn.disabled = false;
 };
 
-processBtn.onclick = async () => {
-    if (!rawArrayBuffer) return;
-
-    processBtn.disabled = true;
-    progressBar.style.width = '0%';
-
-    const decoded = await audioContext.decodeAudioData(rawArrayBuffer);
-    const offline = new OfflineAudioContext(
-        decoded.numberOfChannels,
-        decoded.length,
-        decoded.sampleRate
-    );
-
-    const source = offline.createBufferSource();
-    source.buffer = decoded;
-    source.playbackRate.value = 1.15; // slight pitch up
-
-    const bandpass = offline.createBiquadFilter();
-    bandpass.type = 'bandpass';
+// Create the Alastor-style effect chain
+function createEffectChain(context) {
+    const bandpass = context.createBiquadFilter();
+    bandpass.type = "bandpass";
     bandpass.frequency.value = 1600;
     bandpass.Q.value = 1.2;
 
-    const distortion = offline.createWaveShaper();
+    const distortion = context.createWaveShaper();
     distortion.curve = makeDistortionCurve(400);
     distortion.oversample = '4x';
 
-    const convolver = offline.createConvolver();
-    convolver.buffer = createImpulse(offline, 0.3, 2);
+    const convolver = context.createConvolver();
+    convolver.buffer = createImpulse(context, 0.3, 2);
 
-    source.connect(bandpass);
+    const gain = context.createGain();
+    gain.gain.value = 0.8;
+
     bandpass.connect(distortion);
     distortion.connect(convolver);
-    convolver.connect(offline.destination);
+    convolver.connect(gain);
+    gain.connect(context.destination);
 
-    source.start();
+    return { input: bandpass, output: gain };
+}
 
-    // Progress monitoring
-    let rendered = null;
-    const renderPromise = offline.startRendering().then(res => { rendered = res; });
-    let progressInterval = setInterval(() => {
-        if (!rendered) {
-            let currentTime = offline.currentTime || 0;
-            let total = decoded.duration || 1;
-            let percent = Math.min(100, (currentTime / total) * 100);
-            progressBar.style.width = percent + '%';
-        } else {
-            progressBar.style.width = '100%';
-            clearInterval(progressInterval);
-        }
-    }, 100);
+playBtn.onclick = () => {
+    if (!audioBuffer || isPlaying) return;
 
-    await renderPromise;
+    sourceNode = audioContext.createBufferSource();
+    sourceNode.buffer = audioBuffer;
+    sourceNode.playbackRate.value = 1.15; // slight pitch up
 
-    playAndExport(rendered);
-    processBtn.disabled = false;
+    const chain = createEffectChain(audioContext);
+    sourceNode.connect(chain.input);
+
+    sourceNode.start();
+    isPlaying = true;
+    playBtn.disabled = true;
+    stopBtn.disabled = false;
+
+    // progress bar
+    const startTime = audioContext.currentTime;
+    const duration = audioBuffer.duration;
+
+    function updateProgress() {
+        if (!isPlaying) return;
+        const elapsed = audioContext.currentTime - startTime;
+        progressBar.style.width = Math.min(100, (elapsed / duration) * 100) + '%';
+        if (elapsed < duration) requestAnimationFrame(updateProgress);
+        else stopPlayback();
+    }
+    requestAnimationFrame(updateProgress);
+
+    // prepare download
+    downloadLink.href = bufferToWavBlob(audioBuffer);
+    downloadLink.download = "processed_voice.wav";
+    downloadLink.style.display = "inline";
+    downloadLink.textContent = "Download processed audio";
 };
+
+stopBtn.onclick = stopPlayback;
+
+function stopPlayback() {
+    if (sourceNode) sourceNode.stop();
+    isPlaying = false;
+    playBtn.disabled = false;
+    stopBtn.disabled = true;
+    progressBar.style.width = '0%';
+}
 
 // ----- Helpers -----
 function makeDistortionCurve(amount) {
@@ -146,23 +163,8 @@ function createImpulse(ctx, duration, decay) {
     return impulse;
 }
 
-function playAndExport(buffer) {
-    const wav = bufferToWav(buffer);
-    const blob = new Blob([wav], {type: "audio/wav"});
-    const url = URL.createObjectURL(blob);
-
-    const audio = document.getElementById('outputAudio');
-    audio.src = url;
-
-    const link = document.getElementById('downloadLink');
-    link.href = url;
-    link.download = "processed_voice.wav";
-    link.style.display = "inline";
-    link.textContent = "Download processed audio";
-}
-
-// ----- WAV encoder -----
-function bufferToWav(buffer) {
+// convert AudioBuffer to WAV Blob for download
+function bufferToWavBlob(buffer) {
     const numOfChan = buffer.numberOfChannels;
     const length = buffer.length * numOfChan * 2 + 44;
     const view = new DataView(new ArrayBuffer(length));
@@ -189,7 +191,7 @@ function bufferToWav(buffer) {
             offset += 2;
         }
     }
-    return view;
+    return new Blob([view], {type: "audio/wav"});
 }
 
 function writeString(view, offset, string) {
