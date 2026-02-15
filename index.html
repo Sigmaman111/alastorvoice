@@ -40,7 +40,7 @@ audio {
 
 <h1>Alastor Voice Effect</h1>
 
-<input type="file" id="fileInput" accept="audio/*">
+<input type="file" id="fileInput" accept=".mp3, .wav, audio/*">
 <br>
 <button id="playBtn" disabled>Play with Effect</button>
 <button id="stopBtn" disabled>Stop</button>
@@ -53,9 +53,8 @@ audio {
 
 <script>
 let audioContext = new (window.AudioContext || window.webkitAudioContext)();
-let sourceNode, gainNode;
+let sourceNode, isPlaying = false;
 let audioBuffer = null;
-let isPlaying = false;
 
 const fileInput = document.getElementById('fileInput');
 const playBtn = document.getElementById('playBtn');
@@ -64,7 +63,13 @@ const progressBar = document.getElementById('progressBar');
 const downloadLink = document.getElementById('downloadLink');
 
 fileInput.onchange = async e => {
-    const arrayBuffer = await e.target.files[0].arrayBuffer();
+    const file = e.target.files[0];
+    if (!file) return;
+    if (!file.type.startsWith('audio/') && !file.name.match(/\.(mp3|wav)$/i)) {
+        alert('Please upload an audio file (MP3 or WAV).');
+        return;
+    }
+    const arrayBuffer = await file.arrayBuffer();
     audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
     playBtn.disabled = false;
 };
@@ -99,7 +104,7 @@ playBtn.onclick = () => {
 
     sourceNode = audioContext.createBufferSource();
     sourceNode.buffer = audioBuffer;
-    sourceNode.playbackRate.value = 1.15; // slight pitch up
+    sourceNode.playbackRate.value = 1.15; // pitch up slightly
 
     const chain = createEffectChain(audioContext);
     sourceNode.connect(chain.input);
@@ -109,10 +114,10 @@ playBtn.onclick = () => {
     playBtn.disabled = true;
     stopBtn.disabled = false;
 
-    // progress bar
     const startTime = audioContext.currentTime;
     const duration = audioBuffer.duration;
 
+    // Update progress bar during playback
     function updateProgress() {
         if (!isPlaying) return;
         const elapsed = audioContext.currentTime - startTime;
@@ -122,7 +127,7 @@ playBtn.onclick = () => {
     }
     requestAnimationFrame(updateProgress);
 
-    // prepare download
+    // Enable download (raw audio, original MP3/WAV)
     downloadLink.href = bufferToWavBlob(audioBuffer);
     downloadLink.download = "processed_voice.wav";
     downloadLink.style.display = "inline";
@@ -132,14 +137,17 @@ playBtn.onclick = () => {
 stopBtn.onclick = stopPlayback;
 
 function stopPlayback() {
-    if (sourceNode) sourceNode.stop();
+    if (sourceNode) {
+        sourceNode.stop();
+        sourceNode.disconnect();
+    }
     isPlaying = false;
     playBtn.disabled = false;
     stopBtn.disabled = true;
     progressBar.style.width = '0%';
 }
 
-// ----- Helpers -----
+// --- Helpers ---
 function makeDistortionCurve(amount) {
     const samples = 44100;
     const curve = new Float32Array(samples);
@@ -163,7 +171,7 @@ function createImpulse(ctx, duration, decay) {
     return impulse;
 }
 
-// convert AudioBuffer to WAV Blob for download
+// Convert AudioBuffer to WAV Blob for download
 function bufferToWavBlob(buffer) {
     const numOfChan = buffer.numberOfChannels;
     const length = buffer.length * numOfChan * 2 + 44;
